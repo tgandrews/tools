@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+
+node ~/src/rename-files/index.js "$@"
