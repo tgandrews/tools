@@ -1,9 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 
-const dirPath = process.argv[2];
-
-console.log({ dirPath });
+const dirPath = process.argv[3];
 
 (async () => {
   const directoryPath = path.resolve(dirPath)
