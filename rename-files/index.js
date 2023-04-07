@@ -1,12 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 
-if (process.argv[2] === "--help" || process.argv.length < 5)  {
+if (process.argv[2] === "--help" || process.argv.length < 5) {
   console.log("[replacee] [replacer] [testIt?]")
   process.exit(0);
 }
 
-const directoryPath = path.resolve(process.cwd(), process.argv[2]);
+const directoryPath = path.resolve(process.cwd());
 
 const replacee = process.argv[3];
 const replacer = process.argv[4];
