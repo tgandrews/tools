@@ -9,4 +9,5 @@ while [ -L "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symli
 done
 DIR=$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )
 
-$DIR/$1/run.sh "$@"
+
+node $DIR/index.js "$@"
