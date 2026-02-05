@@ -4,17 +4,20 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "inquirer": "^11.1.0",
     "jiti": "^1.21.0",
     "suppress-experimental-warnings": "^1.1.13",
     "ts-node": "^10.9.2"
   },
   "devDependencies": {
-    "@types/node": "^20.12.7"
+    "@types/node": "^20.12.7",
+    "vitest": "^2.1.8"
   }
 }
