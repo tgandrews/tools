@@ -74,3 +74,97 @@ export function checkForConflicts(operations: RenameOperation[]): string[] {
 
   return conflicts;
 }
+
+export function extractShowNameFromFilename(filename: string): string | null {
+  const match = filename.match(SEASON_EPISODE_REGEX);
+  if (!match) {
+    return null;
+  }
+
+  // Get text before the S##E## pattern
+  const beforePattern = filename.slice(0, match.index);
+
+  // Remove metadata patterns in brackets or parentheses
+  const cleaned = beforePattern.replace(/[\[\(].*?[\]\)]/g, "");
+
+  // Replace separators (., -, _) with spaces
+  const withSpaces = cleaned.replace(/[._-]/g, " ");
+
+  // Trim and split into words
+  const words = withSpaces.trim().split(/\s+/).filter(word => word.length > 0);
+
+  if (words.length === 0) {
+    return null;
+  }
+
+  // Capitalize each word properly
+  const capitalized = words.map(word =>
+    word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+  );
+
+  return capitalized.join(" ");
+}
+
+export interface InferenceResult {
+  showName: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  conflictingNames?: string[];
+}
+
+export function inferShowName(filenames: string[]): InferenceResult {
+  if (filenames.length === 0) {
+    return { showName: null, confidence: 'low' };
+  }
+
+  // Extract show names from all filenames
+  const extractedNames = filenames
+    .map(filename => extractShowNameFromFilename(filename))
+    .filter((name): name is string => name !== null);
+
+  if (extractedNames.length === 0) {
+    return { showName: null, confidence: 'low' };
+  }
+
+  // Count occurrences of each show name
+  const nameCounts = new Map<string, number>();
+  for (const name of extractedNames) {
+    nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+  }
+
+  // Find the most common show name
+  let mostCommonName: string | null = null;
+  let maxCount = 0;
+  for (const [name, count] of nameCounts) {
+    if (count > maxCount) {
+      mostCommonName = name;
+      maxCount = count;
+    }
+  }
+
+  // Determine confidence level
+  const totalExtracted = extractedNames.length;
+  const matchPercentage = (maxCount / totalExtracted) * 100;
+
+  // Get conflicting names (names that aren't the most common)
+  const conflictingNames = Array.from(nameCounts.keys())
+    .filter(name => name !== mostCommonName);
+
+  if (matchPercentage === 100) {
+    // All files match - high confidence
+    return { showName: mostCommonName, confidence: 'high' };
+  } else if (matchPercentage >= 80) {
+    // Most files match (80%+) - medium confidence
+    return {
+      showName: mostCommonName,
+      confidence: 'medium',
+      conflictingNames: conflictingNames.length > 0 ? conflictingNames : undefined
+    };
+  } else {
+    // No clear majority - low confidence
+    return {
+      showName: mostCommonName,
+      confidence: 'low',
+      conflictingNames: conflictingNames.length > 0 ? conflictingNames : undefined
+    };
+  }
+}

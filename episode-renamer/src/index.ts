@@ -7,7 +7,9 @@ import {
   isVideoFile,
   showNameMatchesFilename,
   checkForConflicts,
+  inferShowName,
   type RenameOperation,
+  type InferenceResult,
 } from "./lib.js";
 
 function displayPreview(operations: RenameOperation[]): void {
@@ -36,6 +38,45 @@ function displayPreview(operations: RenameOperation[]): void {
   console.log(`  Total: ${operations.length}`);
 }
 
+async function promptForShowName(inference: InferenceResult): Promise<string> {
+  let message: string;
+  let prefillValue = inference.showName || "";
+
+  if (inference.showName === null) {
+    message = "Could not detect show name. Please enter manually:";
+  } else if (inference.confidence === "high") {
+    message = "Detected show name (all files match):";
+  } else if (inference.confidence === "medium") {
+    message = "Detected show name (most files match):";
+    if (inference.conflictingNames && inference.conflictingNames.length > 0) {
+      console.log(`\n⚠️  Warning: Some files have different show names: ${inference.conflictingNames.join(", ")}`);
+    }
+  } else {
+    message = "Suggested show name (low confidence):";
+    if (inference.conflictingNames && inference.conflictingNames.length > 0) {
+      console.log(`\n⚠️  Multiple shows detected: ${inference.conflictingNames.join(", ")}`);
+    }
+  }
+
+  const result = await inquirer.prompt([
+    {
+      type: "input",
+      name: "showName",
+      message,
+      default: prefillValue,
+      validate: (input: string) => {
+        const trimmed = input.trim();
+        if (trimmed.length === 0) {
+          return "Show name cannot be empty";
+        }
+        return true;
+      },
+    },
+  ]);
+
+  return result.showName.trim();
+}
+
 async function confirmRename(): Promise<boolean> {
   const result = await inquirer.prompt([
     {
@@ -57,22 +98,19 @@ async function performRename(op: RenameOperation): Promise<void> {
 (async () => {
   // Detect if called via tools wrapper (has extra argument) or directly
   const startIndex = process.argv[2] === "episode-renamer" ? 3 : 2;
-  const [folderPath, showName] = process.argv.slice(startIndex);
+  const [folderPath] = process.argv.slice(startIndex);
 
-  if (process.argv[startIndex] === "--help" || !folderPath || !showName) {
-    console.log("Usage: episode-renamer <folderPath> <showName>");
+  if (process.argv[startIndex] === "--help" || !folderPath) {
+    console.log("Usage: episode-renamer <folderPath>");
     console.log("");
     console.log("Arguments:");
     console.log("  folderPath  Path to folder containing episode files");
-    console.log("  showName    Show name in natural format (e.g., \"The Rookie\")");
     console.log("");
     console.log("Examples:");
-    console.log("  episode-renamer ./episodes \"The Rookie\"");
-    console.log("  episode-renamer ./episodes \"Wonder Man\"");
+    console.log("  episode-renamer ./episodes");
     return;
   }
 
-  const normalizedShowName = normalizeShowName(showName);
   const resolvedFolderPath = path.resolve(process.cwd(), folderPath);
 
   const entries = await fs.readdir(resolvedFolderPath, { withFileTypes: true });
@@ -84,6 +122,14 @@ async function performRename(op: RenameOperation): Promise<void> {
     console.log("No video files found in the specified folder.");
     return;
   }
+
+  // Infer show name from filenames
+  const inference = inferShowName(videoFiles.map(f => f.name));
+
+  console.log(`\nFound ${videoFiles.length} video file(s)`);
+
+  const finalShowName = await promptForShowName(inference);
+  const normalizedShowName = normalizeShowName(finalShowName);
 
   const operations: RenameOperation[] = videoFiles.map(file => {
     const seasonEpisode = extractSeasonEpisode(file.name);
@@ -98,7 +144,7 @@ async function performRename(op: RenameOperation): Promise<void> {
       };
     }
 
-    if (!showNameMatchesFilename(showName, file.name)) {
+    if (!showNameMatchesFilename(finalShowName, file.name)) {
       return {
         oldPath: path.join(resolvedFolderPath, file.name),
         newPath: "",
