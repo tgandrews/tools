@@ -98,35 +98,83 @@ async function performRename(op: RenameOperation): Promise<void> {
 (async () => {
   // Detect if called via tools wrapper (has extra argument) or directly
   const startIndex = process.argv[2] === "episode-renamer" ? 3 : 2;
-  const [folderPath] = process.argv.slice(startIndex);
+  const [inputPath] = process.argv.slice(startIndex);
 
-  if (process.argv[startIndex] === "--help" || !folderPath) {
-    console.log("Usage: episode-renamer <folderPath>");
+  if (process.argv[startIndex] === "--help" || !inputPath) {
+    console.log("Usage: episode-renamer <path>");
     console.log("");
     console.log("Arguments:");
-    console.log("  folderPath  Path to folder containing episode files");
+    console.log("  path  Path to folder or single file to rename");
     console.log("");
     console.log("Examples:");
     console.log("  episode-renamer ./episodes");
+    console.log("  episode-renamer ./The.Rookie.S04E07.mkv");
     return;
   }
 
-  const resolvedFolderPath = path.resolve(process.cwd(), folderPath);
+  const resolvedPath = path.resolve(process.cwd(), inputPath);
 
-  const entries = await fs.readdir(resolvedFolderPath, { withFileTypes: true });
-  const videoFiles = entries
-    .filter(e => e.isFile())
-    .filter(e => isVideoFile(e.name));
+  // Detect if path is file or directory
+  let stats;
+  try {
+    stats = await fs.stat(resolvedPath);
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      throw new Error(`Path does not exist: ${inputPath}`);
+    }
+    if (error.code === 'EACCES') {
+      throw new Error(`Permission denied: ${inputPath}`);
+    }
+    throw error;
+  }
 
-  if (videoFiles.length === 0) {
-    console.log("No video files found in the specified folder.");
-    return;
+  const isFile = stats.isFile();
+  const isDirectory = stats.isDirectory();
+
+  if (!isFile && !isDirectory) {
+    throw new Error(`Path is neither a file nor a directory: ${inputPath}`);
+  }
+
+  let videoFiles: { name: string; path: string }[];
+
+  if (isFile) {
+    // Single file mode
+    const filename = path.basename(resolvedPath);
+
+    if (!isVideoFile(filename)) {
+      throw new Error(`Not a video file: ${filename}`);
+    }
+
+    const seasonEpisode = extractSeasonEpisode(filename);
+    if (!seasonEpisode) {
+      throw new Error(`No S##E## pattern found in: ${filename}`);
+    }
+
+    console.log(`\nProcessing single file: ${filename}`);
+
+    videoFiles = [{ name: filename, path: resolvedPath }];
+  } else {
+    // Directory mode (existing logic)
+    const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+    const files = entries
+      .filter(e => e.isFile())
+      .filter(e => isVideoFile(e.name));
+
+    if (files.length === 0) {
+      console.log("No video files found in the specified folder.");
+      return;
+    }
+
+    console.log(`\nFound ${files.length} video file(s)`);
+
+    videoFiles = files.map(f => ({
+      name: f.name,
+      path: path.join(resolvedPath, f.name)
+    }));
   }
 
   // Infer show name from filenames
   const inference = inferShowName(videoFiles.map(f => f.name));
-
-  console.log(`\nFound ${videoFiles.length} video file(s)`);
 
   const finalShowName = await promptForShowName(inference);
   const normalizedShowName = normalizeShowName(finalShowName);
@@ -135,7 +183,7 @@ async function performRename(op: RenameOperation): Promise<void> {
     const seasonEpisode = extractSeasonEpisode(file.name);
     if (!seasonEpisode) {
       return {
-        oldPath: path.join(resolvedFolderPath, file.name),
+        oldPath: file.path,
         newPath: "",
         oldName: file.name,
         newName: "",
@@ -146,7 +194,7 @@ async function performRename(op: RenameOperation): Promise<void> {
 
     if (!showNameMatchesFilename(finalShowName, file.name)) {
       return {
-        oldPath: path.join(resolvedFolderPath, file.name),
+        oldPath: file.path,
         newPath: "",
         oldName: file.name,
         newName: "",
@@ -157,10 +205,13 @@ async function performRename(op: RenameOperation): Promise<void> {
 
     const ext = path.extname(file.name);
     const newName = `${normalizedShowName}.S${seasonEpisode.season}E${seasonEpisode.episode}${ext}`;
+    const newPath = isFile
+      ? path.join(path.dirname(file.path), newName)
+      : path.join(resolvedPath, newName);
 
     return {
-      oldPath: path.join(resolvedFolderPath, file.name),
-      newPath: path.join(resolvedFolderPath, newName),
+      oldPath: file.path,
+      newPath: newPath,
       oldName: file.name,
       newName,
       skipped: false,
