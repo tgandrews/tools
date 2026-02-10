@@ -330,4 +330,238 @@ describe("Episode Renamer Integration Tests", () => {
       expect(result.confidence).toBe("high");
     });
   });
+
+  describe("Single File Mode", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it("should process a single valid video file", async () => {
+      const mockStats = {
+        isFile: () => true,
+        isDirectory: () => false,
+      };
+
+      vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+      const {
+        isVideoFile,
+        extractSeasonEpisode,
+        inferShowName,
+        normalizeShowName,
+        showNameMatchesFilename
+      } = await import("./lib.js");
+
+      const filename = "The.Rookie.S04E07.720p.mkv";
+
+      // Validate file is video
+      expect(isVideoFile(filename)).toBe(true);
+
+      // Extract season/episode
+      const seasonEpisode = extractSeasonEpisode(filename);
+      expect(seasonEpisode).toEqual({
+        season: "04",
+        episode: "07"
+      });
+
+      // Infer show name
+      const result = inferShowName([filename]);
+      expect(result.showName).toBe("The Rookie");
+      expect(result.confidence).toBe("high");
+
+      // Normalize and verify match
+      const normalized = normalizeShowName(result.showName!);
+      expect(normalized).toBe("The.Rookie");
+      expect(showNameMatchesFilename("The Rookie", filename)).toBe(true);
+
+      // Verify expected output filename
+      const expectedOutput = `${normalized}.S${seasonEpisode.season}E${seasonEpisode.episode}.mkv`;
+      expect(expectedOutput).toBe("The.Rookie.S04E07.mkv");
+    });
+
+    it("should infer show name from file with metadata", async () => {
+      const mockStats = {
+        isFile: () => true,
+        isDirectory: () => false,
+      };
+
+      vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+      const { extractShowNameFromFilename, inferShowName } = await import("./lib.js");
+
+      const filename = "[RARBG]The.Rookie.S04E07.1080p.mkv";
+
+      expect(extractShowNameFromFilename(filename)).toBe("The Rookie");
+
+      const result = inferShowName([filename]);
+      expect(result.showName).toBe("The Rookie");
+      expect(result.confidence).toBe("high");
+    });
+
+    it("should handle file with various separators", async () => {
+      const mockStats = {
+        isFile: () => true,
+        isDirectory: () => false,
+      };
+
+      vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+      const { extractShowNameFromFilename } = await import("./lib.js");
+
+      expect(extractShowNameFromFilename("The.Rookie.S04E07.mkv")).toBe("The Rookie");
+      expect(extractShowNameFromFilename("The-Rookie-S04E07.mkv")).toBe("The Rookie");
+      expect(extractShowNameFromFilename("The_Rookie_S04E07.mkv")).toBe("The Rookie");
+      expect(extractShowNameFromFilename("Wonder.Man.S01E01.mp4")).toBe("Wonder Man");
+    });
+
+    it("should handle lowercase and mixed case patterns", async () => {
+      const mockStats = {
+        isFile: () => true,
+        isDirectory: () => false,
+      };
+
+      vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+      const { extractShowNameFromFilename, extractSeasonEpisode } = await import("./lib.js");
+
+      // Lowercase
+      expect(extractShowNameFromFilename("wonder.man.s01e01.mkv")).toBe("Wonder Man");
+      expect(extractSeasonEpisode("wonder.man.s01e01.mkv")).toEqual({
+        season: "01",
+        episode: "01"
+      });
+
+      // Mixed case
+      expect(extractShowNameFromFilename("THE.ROOKIE.S04E07.mkv")).toBe("The Rookie");
+      expect(extractSeasonEpisode("THE.ROOKIE.S04E07.mkv")).toEqual({
+        season: "04",
+        episode: "07"
+      });
+    });
+
+    it("should process files with various video extensions", async () => {
+      const mockStats = {
+        isFile: () => true,
+        isDirectory: () => false,
+      };
+
+      vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+      const { isVideoFile } = await import("./lib.js");
+
+      // All supported extensions
+      expect(isVideoFile("show.mkv")).toBe(true);
+      expect(isVideoFile("show.mp4")).toBe(true);
+      expect(isVideoFile("show.avi")).toBe(true);
+      expect(isVideoFile("show.flv")).toBe(true);
+      expect(isVideoFile("show.m4v")).toBe(true);
+      expect(isVideoFile("show.mov")).toBe(true);
+      expect(isVideoFile("show.wmv")).toBe(true);
+
+      // Case insensitive
+      expect(isVideoFile("show.MKV")).toBe(true);
+    });
+
+    it("should reject non-video files", async () => {
+      const mockStats = {
+        isFile: () => true,
+        isDirectory: () => false,
+      };
+
+      vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+      const { isVideoFile } = await import("./lib.js");
+
+      expect(isVideoFile("readme.txt")).toBe(false);
+      expect(isVideoFile("document.pdf")).toBe(false);
+      expect(isVideoFile("info.nfo")).toBe(false);
+      expect(isVideoFile("image.jpg")).toBe(false);
+      expect(isVideoFile("subtitle.srt")).toBe(false);
+    });
+
+    it("should detect missing S##E## pattern in various files", async () => {
+      const { extractSeasonEpisode } = await import("./lib.js");
+
+      expect(extractSeasonEpisode("movie.mkv")).toBeNull();
+      expect(extractSeasonEpisode("random_file.mp4")).toBeNull();
+      expect(extractSeasonEpisode("Season 1 Episode 2.mkv")).toBeNull();
+      expect(extractSeasonEpisode("The Rookie.mkv")).toBeNull();
+    });
+
+    it("should verify file matches inferred show name", async () => {
+      const mockStats = {
+        isFile: () => true,
+        isDirectory: () => false,
+      };
+
+      vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+      const { showNameMatchesFilename } = await import("./lib.js");
+
+      // Should match
+      expect(showNameMatchesFilename("The Rookie", "The.Rookie.S04E07.mkv")).toBe(true);
+      expect(showNameMatchesFilename("The Rookie", "The-Rookie-S04E07.mkv")).toBe(true);
+      expect(showNameMatchesFilename("Wonder Man", "Wonder.Man.S01E01.mkv")).toBe(true);
+
+      // Should not match
+      expect(showNameMatchesFilename("The Rookie", "Wonder.Man.S01E01.mkv")).toBe(false);
+      expect(showNameMatchesFilename("Wonder Man", "The.Rookie.S04E07.mkv")).toBe(false);
+    });
+
+    it("should handle ENOENT error for non-existent path", async () => {
+      const error = new Error("ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+
+      vi.mocked(fs.stat).mockRejectedValue(error);
+
+      // Validate error code detection
+      try {
+        await fs.stat("nonexistent.mkv");
+        expect.fail("Should have thrown error");
+      } catch (e: any) {
+        expect(e.code).toBe("ENOENT");
+      }
+    });
+
+    it("should handle EACCES error for permission denied", async () => {
+      const error = new Error("EACCES") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+
+      vi.mocked(fs.stat).mockRejectedValue(error);
+
+      // Validate error code detection
+      try {
+        await fs.stat("restricted.mkv");
+        expect.fail("Should have thrown error");
+      } catch (e: any) {
+        expect(e.code).toBe("EACCES");
+      }
+    });
+
+    it("should maintain backward compatibility with directory mode", async () => {
+      const mockStats = {
+        isFile: () => false,
+        isDirectory: () => true,
+      };
+
+      vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+      const mockFiles: Dirent[] = [
+        new MockDirent("The.Rookie.S04E01.mkv"),
+        new MockDirent("The.Rookie.S04E02.mkv"),
+      ] as Dirent[];
+
+      vi.mocked(fs.readdir).mockResolvedValue(mockFiles);
+
+      const { inferShowName } = await import("./lib.js");
+
+      // Directory mode should still work with multiple files
+      const filenames = mockFiles.map(f => f.name);
+      const result = inferShowName(filenames);
+
+      expect(result.showName).toBe("The Rookie");
+      expect(result.confidence).toBe("high");
+      expect(result.conflictingNames).toBeUndefined();
+    });
+  });
 });

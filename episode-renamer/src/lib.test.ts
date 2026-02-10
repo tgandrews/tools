@@ -425,4 +425,13 @@ describe("inferShowName", () => {
     expect(result.confidence).toBe("high");
     expect(result.conflictingNames).toBeUndefined();
   });
+
+  it("should infer with high confidence for single file", () => {
+    const filenames = ["The.Rookie.S04E01.mkv"];
+    const result = inferShowName(filenames);
+
+    expect(result.showName).toBe("The Rookie");
+    expect(result.confidence).toBe("high");
+    expect(result.conflictingNames).toBeUndefined();
+  });
 });
