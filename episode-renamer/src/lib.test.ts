@@ -5,6 +5,8 @@ import {
   isVideoFile,
   showNameMatchesFilename,
   checkForConflicts,
+  extractShowNameFromFilename,
+  inferShowName,
   type RenameOperation,
 } from "./lib.js";
 
@@ -267,5 +269,160 @@ describe("checkForConflicts", () => {
     ];
 
     expect(checkForConflicts(operations)).toEqual([]);
+  });
+});
+
+describe("extractShowNameFromFilename", () => {
+  it("should extract from dot-separated filename", () => {
+    expect(extractShowNameFromFilename("The.Rookie.S04E07.mkv")).toBe("The Rookie");
+  });
+
+  it("should extract from dash-separated filename", () => {
+    expect(extractShowNameFromFilename("The-Rookie-S04E07.mkv")).toBe("The Rookie");
+  });
+
+  it("should extract from space-separated filename", () => {
+    expect(extractShowNameFromFilename("The Rookie S04E07.mkv")).toBe("The Rookie");
+  });
+
+  it("should extract from underscore-separated filename", () => {
+    expect(extractShowNameFromFilename("the_rookie_s04e07.mkv")).toBe("The Rookie");
+  });
+
+  it("should handle mixed separators", () => {
+    expect(extractShowNameFromFilename("The.Rookie-Feds_S01E01.mkv")).toBe("The Rookie Feds");
+  });
+
+  it("should normalize case", () => {
+    expect(extractShowNameFromFilename("THE.ROOKIE.S04E07.mkv")).toBe("The Rookie");
+  });
+
+  it("should return null when no S##E## pattern found", () => {
+    expect(extractShowNameFromFilename("random_file.mkv")).toBeNull();
+  });
+
+  it("should remove metadata in brackets", () => {
+    expect(extractShowNameFromFilename("[RARBG]The.Rookie.S04E07.mkv")).toBe("The Rookie");
+  });
+
+  it("should remove metadata in parentheses", () => {
+    expect(extractShowNameFromFilename("(2023)The.Rookie.S04E07.mkv")).toBe("The Rookie");
+  });
+
+  it("should handle multiple metadata patterns", () => {
+    expect(extractShowNameFromFilename("[RARBG]The.Rookie[1080p].S04E07.mkv")).toBe("The Rookie");
+  });
+
+  it("should handle lowercase pattern", () => {
+    expect(extractShowNameFromFilename("wonder.man.s01e01.mkv")).toBe("Wonder Man");
+  });
+
+  it("should handle mixed case pattern", () => {
+    expect(extractShowNameFromFilename("Wonder.Man.S01e01.mkv")).toBe("Wonder Man");
+  });
+
+  it("should handle extra content after pattern", () => {
+    expect(extractShowNameFromFilename("The.Rookie.S04E07.720p.HDTV.mkv")).toBe("The Rookie");
+  });
+});
+
+describe("inferShowName", () => {
+  it("should infer with high confidence when all files match", () => {
+    const filenames = [
+      "The.Rookie.S04E01.mkv",
+      "The.Rookie.S04E02.mkv",
+      "The.Rookie.S04E03.mkv",
+    ];
+
+    const result = inferShowName(filenames);
+    expect(result.showName).toBe("The Rookie");
+    expect(result.confidence).toBe("high");
+    expect(result.conflictingNames).toBeUndefined();
+  });
+
+  it("should infer with high confidence when files have different separators", () => {
+    const filenames = [
+      "The.Rookie.S04E01.mkv",
+      "The-Rookie-S04E02.mkv",
+      "The_Rookie_S04E03.mkv",
+    ];
+
+    const result = inferShowName(filenames);
+    expect(result.showName).toBe("The Rookie");
+    expect(result.confidence).toBe("high");
+    expect(result.conflictingNames).toBeUndefined();
+  });
+
+  it("should infer with medium confidence when 80%+ majority", () => {
+    const filenames = [
+      "The.Rookie.S04E01.mkv",
+      "The.Rookie.S04E02.mkv",
+      "The.Rookie.S04E03.mkv",
+      "The.Rookie.S04E04.mkv",
+      "Wonder.Man.S01E01.mkv",
+    ];
+
+    const result = inferShowName(filenames);
+    expect(result.showName).toBe("The Rookie");
+    expect(result.confidence).toBe("medium");
+    expect(result.conflictingNames).toEqual(["Wonder Man"]);
+  });
+
+  it("should infer with low confidence when no clear majority", () => {
+    const filenames = [
+      "The.Rookie.S04E01.mkv",
+      "Wonder.Man.S01E01.mkv",
+      "Breaking.Bad.S01E01.mkv",
+    ];
+
+    const result = inferShowName(filenames);
+    expect(result.showName).toBe("The Rookie"); // First one alphabetically or by occurrence
+    expect(result.confidence).toBe("low");
+    expect(result.conflictingNames).toContain("Wonder Man");
+    expect(result.conflictingNames).toContain("Breaking Bad");
+  });
+
+  it("should return null with low confidence when no S##E## patterns", () => {
+    const filenames = [
+      "random_file.mkv",
+      "movie.mp4",
+    ];
+
+    const result = inferShowName(filenames);
+    expect(result.showName).toBeNull();
+    expect(result.confidence).toBe("low");
+  });
+
+  it("should return null with low confidence for empty array", () => {
+    const result = inferShowName([]);
+    expect(result.showName).toBeNull();
+    expect(result.confidence).toBe("low");
+  });
+
+  it("should handle mix of valid and invalid filenames", () => {
+    const filenames = [
+      "The.Rookie.S04E01.mkv",
+      "The.Rookie.S04E02.mkv",
+      "random_file.mkv",
+      "movie.mp4",
+    ];
+
+    const result = inferShowName(filenames);
+    expect(result.showName).toBe("The Rookie");
+    expect(result.confidence).toBe("high");
+    expect(result.conflictingNames).toBeUndefined();
+  });
+
+  it("should handle case-insensitive matching", () => {
+    const filenames = [
+      "THE.ROOKIE.S04E01.mkv",
+      "the.rookie.s04e02.mkv",
+      "The.Rookie.S04E03.mkv",
+    ];
+
+    const result = inferShowName(filenames);
+    expect(result.showName).toBe("The Rookie");
+    expect(result.confidence).toBe("high");
+    expect(result.conflictingNames).toBeUndefined();
   });
 });
