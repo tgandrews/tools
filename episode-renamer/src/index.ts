@@ -5,11 +5,20 @@ import {
   normalizeShowName,
   extractSeasonEpisode,
   isVideoFile,
+  isSubtitleFile,
+  isProcessableFile,
+  findMatchingSubtitles,
+  getSubtitleLanguageCode,
   showNameMatchesFilename,
   checkForConflicts,
   inferShowName,
+  detectContentType,
+  inferMovieTitle,
+  movieTitleMatchesFilename,
+  extractYear,
   type RenameOperation,
   type InferenceResult,
+  type ContentInfo,
 } from "./lib.js";
 
 function displayPreview(operations: RenameOperation[]): void {
@@ -38,23 +47,25 @@ function displayPreview(operations: RenameOperation[]): void {
   console.log(`  Total: ${operations.length}`);
 }
 
-async function promptForShowName(inference: InferenceResult): Promise<string> {
+async function promptForShowName(inference: InferenceResult, isMovie: boolean = false): Promise<string> {
   let message: string;
   let prefillValue = inference.showName || "";
+  const contentLabel = isMovie ? "movie title" : "show name";
+  const contentLabelCap = isMovie ? "Movie title" : "Show name";
 
   if (inference.showName === null) {
-    message = "Could not detect show name. Please enter manually:";
+    message = `Could not detect ${contentLabel}. Please enter manually:`;
   } else if (inference.confidence === "high") {
-    message = "Detected show name (all files match):";
+    message = `Detected ${contentLabel} (all files match):`;
   } else if (inference.confidence === "medium") {
-    message = "Detected show name (most files match):";
+    message = `Detected ${contentLabel} (most files match):`;
     if (inference.conflictingNames && inference.conflictingNames.length > 0) {
-      console.log(`\n⚠️  Warning: Some files have different show names: ${inference.conflictingNames.join(", ")}`);
+      console.log(`\n⚠️  Warning: Some files have different ${contentLabel}s: ${inference.conflictingNames.join(", ")}`);
     }
   } else {
-    message = "Suggested show name (low confidence):";
+    message = `Suggested ${contentLabel} (low confidence):`;
     if (inference.conflictingNames && inference.conflictingNames.length > 0) {
-      console.log(`\n⚠️  Multiple shows detected: ${inference.conflictingNames.join(", ")}`);
+      console.log(`\n⚠️  Multiple ${contentLabel}s detected: ${inference.conflictingNames.join(", ")}`);
     }
   }
 
@@ -67,7 +78,7 @@ async function promptForShowName(inference: InferenceResult): Promise<string> {
       validate: (input: string) => {
         const trimmed = input.trim();
         if (trimmed.length === 0) {
-          return "Show name cannot be empty";
+          return `${contentLabelCap} cannot be empty`;
         }
         return true;
       },
@@ -103,12 +114,21 @@ async function performRename(op: RenameOperation): Promise<void> {
   if (process.argv[startIndex] === "--help" || !inputPath) {
     console.log("Usage: episode-renamer <path>");
     console.log("");
+    console.log("Description:");
+    console.log("  Rename TV show episodes (S##E##) or movie files (with year)");
+    console.log("  Works with video files (.mp4, .mkv, etc.) and subtitle files (.srt)");
+    console.log("  Automatically renames matching subtitle files when processing videos");
+    console.log("");
     console.log("Arguments:");
     console.log("  path  Path to folder or single file to rename");
     console.log("");
     console.log("Examples:");
-    console.log("  episode-renamer ./episodes");
-    console.log("  episode-renamer ./The.Rookie.S04E07.mkv");
+    console.log("  episode-renamer ./episodes                    # TV show folder");
+    console.log("  episode-renamer ./The.Rookie.S04E07.mkv       # Single episode");
+    console.log("  episode-renamer ./movies                      # Movie folder");
+    console.log("  episode-renamer ./Marty.Supreme.2025.mp4      # Single movie");
+    console.log("  episode-renamer ./Marty.Supreme.2025.srt      # Single subtitle");
+    console.log("  episode-renamer ./Marty.Supreme.2025.en.srt   # Subtitle with language code");
     return;
   }
 
@@ -141,31 +161,33 @@ async function performRename(op: RenameOperation): Promise<void> {
     // Single file mode
     const filename = path.basename(resolvedPath);
 
-    if (!isVideoFile(filename)) {
-      throw new Error(`Not a video file: ${filename}`);
+    if (!isProcessableFile(filename)) {
+      throw new Error(`Not a video or subtitle file: ${filename}`);
     }
 
-    const seasonEpisode = extractSeasonEpisode(filename);
-    if (!seasonEpisode) {
-      throw new Error(`No S##E## pattern found in: ${filename}`);
+    const contentInfo = detectContentType(filename);
+    if (contentInfo.type === 'unknown') {
+      throw new Error(`No S##E## pattern or year found in: ${filename}`);
     }
 
     console.log(`\nProcessing single file: ${filename}`);
 
     videoFiles = [{ name: filename, path: resolvedPath }];
   } else {
-    // Directory mode (existing logic)
+    // Directory mode - process both video and subtitle files
     const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
-    const files = entries
-      .filter(e => e.isFile())
-      .filter(e => isVideoFile(e.name));
+    const allFiles = entries.filter(e => e.isFile());
+    const files = allFiles.filter(e => isProcessableFile(e.name));
 
     if (files.length === 0) {
-      console.log("No video files found in the specified folder.");
+      console.log("No video or subtitle files found in the specified folder.");
       return;
     }
 
-    console.log(`\nFound ${files.length} video file(s)`);
+    const videoFileCount = files.filter(f => isVideoFile(f.name)).length;
+    const subtitleFileCount = files.filter(f => isSubtitleFile(f.name)).length;
+
+    console.log(`\nFound ${videoFileCount} video file(s) and ${subtitleFileCount} subtitle file(s)`);
 
     videoFiles = files.map(f => ({
       name: f.name,
@@ -173,55 +195,194 @@ async function performRename(op: RenameOperation): Promise<void> {
     }));
   }
 
-  // Infer show name from filenames
-  const inference = inferShowName(videoFiles.map(f => f.name));
+  // Detect content type from first file
+  const firstFileContentInfo = detectContentType(videoFiles[0].name);
+  const isMovie = firstFileContentInfo.type === 'movie';
 
-  const finalShowName = await promptForShowName(inference);
-  const normalizedShowName = normalizeShowName(finalShowName);
+  // Infer show name or movie title from filenames
+  const inference = isMovie
+    ? inferMovieTitle(videoFiles.map(f => f.name))
+    : inferShowName(videoFiles.map(f => f.name));
 
-  const operations: RenameOperation[] = videoFiles.map(file => {
-    const seasonEpisode = extractSeasonEpisode(file.name);
-    if (!seasonEpisode) {
-      return {
+  const finalName = await promptForShowName(inference, isMovie);
+  const normalizedName = normalizeShowName(finalName);
+
+  // Get all filenames for subtitle matching
+  let allFilenames: string[];
+  if (isFile) {
+    // Single file mode - check same directory for subtitles
+    const dirPath = path.dirname(resolvedPath);
+    const dirEntries = await fs.readdir(dirPath, { withFileTypes: true });
+    allFilenames = dirEntries.filter(e => e.isFile()).map(e => e.name);
+  } else {
+    // Directory mode - use already scanned files
+    const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+    allFilenames = entries.filter(e => e.isFile()).map(e => e.name);
+  }
+
+  const operations: RenameOperation[] = [];
+
+  // Process video and subtitle files
+  for (const file of videoFiles) {
+    const contentInfo = detectContentType(file.name);
+    const isSubtitle = isSubtitleFile(file.name);
+
+    // Handle episode files
+    if (contentInfo.type === 'episode') {
+      if (!showNameMatchesFilename(finalName, file.name)) {
+        operations.push({
+          oldPath: file.path,
+          newPath: "",
+          oldName: file.name,
+          newName: "",
+          skipped: true,
+          reason: "Show name not found in filename",
+        });
+        continue;
+      }
+
+      const ext = path.extname(file.name);
+
+      // For subtitle files, preserve language code if present
+      let newName: string;
+      if (isSubtitle) {
+        const languageCode = getSubtitleLanguageCode(file.name);
+        newName = languageCode
+          ? `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.${languageCode}${ext}`
+          : `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}${ext}`;
+      } else {
+        newName = `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}${ext}`;
+      }
+
+      const newPath = isFile
+        ? path.join(path.dirname(file.path), newName)
+        : path.join(resolvedPath, newName);
+
+      operations.push({
         oldPath: file.path,
-        newPath: "",
+        newPath: newPath,
         oldName: file.name,
-        newName: "",
-        skipped: true,
-        reason: "No S##E## pattern found",
-      };
+        newName,
+        skipped: false,
+      });
+
+      // Find and process matching subtitle files (only for video files, not for subtitles)
+      if (!isSubtitle) {
+        const matchingSubtitles = findMatchingSubtitles(file.name, allFilenames);
+        for (const subtitleFile of matchingSubtitles) {
+          const languageCode = getSubtitleLanguageCode(subtitleFile);
+          const subtitleNewName = languageCode
+            ? `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.${languageCode}.srt`
+            : `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.srt`;
+
+          const subtitlePath = isFile
+            ? path.join(path.dirname(file.path), subtitleFile)
+            : path.join(resolvedPath, subtitleFile);
+
+          const subtitleNewPath = isFile
+            ? path.join(path.dirname(file.path), subtitleNewName)
+            : path.join(resolvedPath, subtitleNewName);
+
+          operations.push({
+            oldPath: subtitlePath,
+            newPath: subtitleNewPath,
+            oldName: subtitleFile,
+            newName: subtitleNewName,
+            skipped: false,
+          });
+        }
+      }
+
+      continue;
     }
 
-    if (!showNameMatchesFilename(finalShowName, file.name)) {
-      return {
+    // Handle movie files
+    if (contentInfo.type === 'movie') {
+      if (!movieTitleMatchesFilename(finalName, file.name)) {
+        operations.push({
+          oldPath: file.path,
+          newPath: "",
+          oldName: file.name,
+          newName: "",
+          skipped: true,
+          reason: "Movie title not found in filename",
+        });
+        continue;
+      }
+
+      const ext = path.extname(file.name);
+
+      // For subtitle files, preserve language code if present
+      let newName: string;
+      if (isSubtitle) {
+        const languageCode = getSubtitleLanguageCode(file.name);
+        newName = languageCode
+          ? `${normalizedName}.${contentInfo.year}.${languageCode}${ext}`
+          : `${normalizedName}.${contentInfo.year}${ext}`;
+      } else {
+        newName = `${normalizedName}.${contentInfo.year}${ext}`;
+      }
+
+      const newPath = isFile
+        ? path.join(path.dirname(file.path), newName)
+        : path.join(resolvedPath, newName);
+
+      operations.push({
         oldPath: file.path,
-        newPath: "",
+        newPath: newPath,
         oldName: file.name,
-        newName: "",
-        skipped: true,
-        reason: "Show name not found in filename",
-      };
+        newName,
+        skipped: false,
+      });
+
+      // Find and process matching subtitle files (only for video files, not for subtitles)
+      if (!isSubtitle) {
+        const matchingSubtitles = findMatchingSubtitles(file.name, allFilenames);
+        for (const subtitleFile of matchingSubtitles) {
+          const languageCode = getSubtitleLanguageCode(subtitleFile);
+          const subtitleNewName = languageCode
+            ? `${normalizedName}.${contentInfo.year}.${languageCode}.srt`
+            : `${normalizedName}.${contentInfo.year}.srt`;
+
+          const subtitlePath = isFile
+            ? path.join(path.dirname(file.path), subtitleFile)
+            : path.join(resolvedPath, subtitleFile);
+
+          const subtitleNewPath = isFile
+            ? path.join(path.dirname(file.path), subtitleNewName)
+            : path.join(resolvedPath, subtitleNewName);
+
+          operations.push({
+            oldPath: subtitlePath,
+            newPath: subtitleNewPath,
+            oldName: subtitleFile,
+            newName: subtitleNewName,
+            skipped: false,
+          });
+        }
+      }
+
+      continue;
     }
 
-    const ext = path.extname(file.name);
-    const newName = `${normalizedShowName}.S${seasonEpisode.season}E${seasonEpisode.episode}${ext}`;
-    const newPath = isFile
-      ? path.join(path.dirname(file.path), newName)
-      : path.join(resolvedPath, newName);
-
-    return {
+    // Handle unknown content type
+    operations.push({
       oldPath: file.path,
-      newPath: newPath,
+      newPath: "",
       oldName: file.name,
-      newName,
-      skipped: false,
-    };
-  });
+      newName: "",
+      skipped: true,
+      reason: "No S##E## pattern or year found",
+    });
+  }
 
   const validOps = operations.filter(op => !op.skipped);
 
   if (validOps.length === 0) {
-    console.log("No files with S##E## pattern found.");
+    const message = isMovie
+      ? "No files with valid year found."
+      : "No files with S##E## pattern found.";
+    console.log(message);
     displayPreview(operations);
     return;
   }

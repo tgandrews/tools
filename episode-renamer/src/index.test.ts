@@ -564,4 +564,770 @@ describe("Episode Renamer Integration Tests", () => {
       expect(result.conflictingNames).toBeUndefined();
     });
   });
+
+  describe("Movie Renaming", () => {
+    describe("Single Movie File", () => {
+      it("should detect movie with year from single file", async () => {
+        const mockStats = {
+          isFile: () => true,
+          isDirectory: () => false,
+        };
+
+        vi.mocked(fs.stat).mockResolvedValue(mockStats as any);
+
+        const {
+          detectContentType,
+          extractMovieTitleFromFilename,
+          inferMovieTitle,
+          normalizeShowName,
+          movieTitleMatchesFilename,
+          extractYear
+        } = await import("./lib.js");
+
+        const filename = "Marty.Supreme.2025.1080p.WEBRip.x264.AAC5.1-[YTS.BZ].mp4";
+
+        // Detect content type
+        const contentInfo = detectContentType(filename);
+        expect(contentInfo.type).toBe("movie");
+        expect(contentInfo.year).toBe("2025");
+
+        // Extract movie title
+        expect(extractMovieTitleFromFilename(filename)).toBe("Marty Supreme");
+
+        // Infer movie title
+        const result = inferMovieTitle([filename]);
+        expect(result.showName).toBe("Marty Supreme");
+        expect(result.confidence).toBe("high");
+
+        // Normalize and verify match
+        const normalized = normalizeShowName(result.showName!);
+        expect(normalized).toBe("Marty.Supreme");
+        expect(movieTitleMatchesFilename("Marty Supreme", filename)).toBe(true);
+
+        // Verify expected output filename
+        const expectedOutput = `${normalized}.${contentInfo.year}.mp4`;
+        expect(expectedOutput).toBe("Marty.Supreme.2025.mp4");
+      });
+
+      it("should handle movie with year in brackets", async () => {
+        const { detectContentType, extractMovieTitleFromFilename, extractYear } = await import("./lib.js");
+
+        const filename = "Some.Movie.[2024].1080p.mp4";
+
+        const contentInfo = detectContentType(filename);
+        expect(contentInfo.type).toBe("movie");
+        expect(contentInfo.year).toBe("2024");
+
+        expect(extractMovieTitleFromFilename(filename)).toBe("Some Movie");
+      });
+
+      it("should handle movie with year in parentheses", async () => {
+        const { detectContentType, extractMovieTitleFromFilename } = await import("./lib.js");
+
+        const filename = "Another.Movie.(2023).720p.mp4";
+
+        const contentInfo = detectContentType(filename);
+        expect(contentInfo.type).toBe("movie");
+        expect(contentInfo.year).toBe("2023");
+
+        expect(extractMovieTitleFromFilename(filename)).toBe("Another Movie");
+      });
+    });
+
+    describe("Batch Movie Renaming", () => {
+      it("should detect movie title with high confidence when all files match", async () => {
+        const mockFiles: Dirent[] = [
+          new MockDirent("Marty.Supreme.2025.1080p.mp4"),
+          new MockDirent("Marty.Supreme.2025.720p.mp4"),
+          new MockDirent("Marty.Supreme.2025.480p.mp4"),
+        ] as Dirent[];
+
+        const { inferMovieTitle } = await import("./lib.js");
+        const filenames = mockFiles.map(f => f.name);
+        const result = inferMovieTitle(filenames);
+
+        expect(result.showName).toBe("Marty Supreme");
+        expect(result.confidence).toBe("high");
+        expect(result.conflictingNames).toBeUndefined();
+      });
+
+      it("should detect movie title with different separators", async () => {
+        const mockFiles: Dirent[] = [
+          new MockDirent("The.Matrix.1999.mp4"),
+          new MockDirent("The-Matrix-1999.mkv"),
+          new MockDirent("The_Matrix_1999.avi"),
+        ] as Dirent[];
+
+        const { inferMovieTitle } = await import("./lib.js");
+        const filenames = mockFiles.map(f => f.name);
+        const result = inferMovieTitle(filenames);
+
+        expect(result.showName).toBe("The Matrix");
+        expect(result.confidence).toBe("high");
+      });
+
+      it("should generate correct rename operations for movie files", async () => {
+        const mockFiles: Dirent[] = [
+          new MockDirent("Marty.Supreme.2025.1080p.WEBRip.x264.mp4"),
+          new MockDirent("Marty.Supreme.2025.720p.WEBRip.x264.mp4"),
+        ] as Dirent[];
+
+        const {
+          normalizeShowName,
+          detectContentType,
+          movieTitleMatchesFilename
+        } = await import("./lib.js");
+
+        const movieTitle = "Marty Supreme";
+        const normalizedTitle = normalizeShowName(movieTitle);
+
+        const operations = mockFiles.map(file => {
+          const contentInfo = detectContentType(file.name);
+          const matches = movieTitleMatchesFilename(movieTitle, file.name);
+
+          if (contentInfo.type === 'movie' && matches) {
+            const ext = file.name.substring(file.name.lastIndexOf('.'));
+            return {
+              oldName: file.name,
+              newName: `${normalizedTitle}.${contentInfo.year}${ext}`,
+              skipped: false
+            };
+          }
+
+          return {
+            oldName: file.name,
+            newName: "",
+            skipped: true,
+            reason: "Movie title not found in filename"
+          };
+        });
+
+        expect(operations).toHaveLength(2);
+        expect(operations[0]).toMatchObject({
+          oldName: "Marty.Supreme.2025.1080p.WEBRip.x264.mp4",
+          newName: "Marty.Supreme.2025.mp4",
+          skipped: false
+        });
+        expect(operations[1]).toMatchObject({
+          oldName: "Marty.Supreme.2025.720p.WEBRip.x264.mp4",
+          newName: "Marty.Supreme.2025.mp4",
+          skipped: false
+        });
+      });
+    });
+
+    describe("Content Type Priority", () => {
+      it("should prioritize S##E## pattern over year (treat as episode)", async () => {
+        const { detectContentType } = await import("./lib.js");
+
+        const filename = "Show.2024.S01E01.mkv";
+
+        const contentInfo = detectContentType(filename);
+        expect(contentInfo.type).toBe("episode");
+        expect(contentInfo.seasonEpisode).toEqual({ season: "01", episode: "01" });
+      });
+
+      it("should treat file with only year as movie", async () => {
+        const { detectContentType } = await import("./lib.js");
+
+        const filename = "Marty.Supreme.2025.mp4";
+
+        const contentInfo = detectContentType(filename);
+        expect(contentInfo.type).toBe("movie");
+        expect(contentInfo.year).toBe("2025");
+      });
+
+      it("should return unknown for files with neither pattern", async () => {
+        const { detectContentType } = await import("./lib.js");
+
+        const filename = "random_file.mkv";
+
+        const contentInfo = detectContentType(filename);
+        expect(contentInfo.type).toBe("unknown");
+      });
+    });
+
+    describe("Movie Edge Cases", () => {
+      it("should filter out resolution indicators like 1080p and 2160p", async () => {
+        const { extractYear } = await import("./lib.js");
+
+        expect(extractYear("Movie.1080p.2025.mp4")).toBe("2025");
+        expect(extractYear("Movie.2160p.2025.4K.mp4")).toBe("2025");
+        expect(extractYear("Movie.720p.1080p.2024.mp4")).toBe("2024");
+      });
+
+      it("should use first valid year when multiple years present", async () => {
+        const { extractYear, extractMovieTitleFromFilename } = await import("./lib.js");
+
+        const filename = "Movie.2024.Remastered.2025.mp4";
+
+        expect(extractYear(filename)).toBe("2024");
+        expect(extractMovieTitleFromFilename(filename)).toBe("Movie");
+      });
+
+      it("should handle metadata in brackets before movie title", async () => {
+        const { extractMovieTitleFromFilename } = await import("./lib.js");
+
+        expect(extractMovieTitleFromFilename("[RARBG]Marty.Supreme.2025.mp4")).toBe("Marty Supreme");
+        expect(extractMovieTitleFromFilename("[YTS]The.Matrix.1999.mp4")).toBe("The Matrix");
+      });
+
+      it("should handle uppercase and lowercase movie filenames", async () => {
+        const { extractMovieTitleFromFilename } = await import("./lib.js");
+
+        expect(extractMovieTitleFromFilename("THE.MATRIX.1999.mkv")).toBe("The Matrix");
+        expect(extractMovieTitleFromFilename("the.matrix.1999.mkv")).toBe("The Matrix");
+      });
+
+      it("should reject files with year outside valid range", async () => {
+        const { extractYear } = await import("./lib.js");
+
+        expect(extractYear("Movie.1899.mp4")).toBeNull();
+        expect(extractYear("Movie.2100.mp4")).toBeNull();
+        expect(extractYear("Movie.1900.mp4")).toBe("1900");
+        expect(extractYear("Movie.2099.mp4")).toBe("2099");
+      });
+    });
+
+    describe("Mixed Content Handling", () => {
+      it("should handle directory with both episodes and movies", async () => {
+        const mockFiles: Dirent[] = [
+          new MockDirent("The.Rookie.S04E01.mkv"),
+          new MockDirent("The.Rookie.S04E02.mkv"),
+          new MockDirent("Marty.Supreme.2025.mp4"),
+          new MockDirent("The.Matrix.1999.mp4"),
+        ] as Dirent[];
+
+        const { detectContentType } = await import("./lib.js");
+
+        const episodes = mockFiles.filter(f => detectContentType(f.name).type === 'episode');
+        const movies = mockFiles.filter(f => detectContentType(f.name).type === 'movie');
+
+        expect(episodes).toHaveLength(2);
+        expect(movies).toHaveLength(2);
+        expect(episodes.map(f => f.name)).toEqual([
+          "The.Rookie.S04E01.mkv",
+          "The.Rookie.S04E02.mkv"
+        ]);
+        expect(movies.map(f => f.name)).toEqual([
+          "Marty.Supreme.2025.mp4",
+          "The.Matrix.1999.mp4"
+        ]);
+      });
+
+      it("should skip files without patterns in mixed directory", async () => {
+        const mockFiles: Dirent[] = [
+          new MockDirent("The.Rookie.S04E01.mkv"),
+          new MockDirent("Marty.Supreme.2025.mp4"),
+          new MockDirent("random_file.mkv"),
+          new MockDirent("readme.txt"),
+        ] as Dirent[];
+
+        const { detectContentType, isVideoFile } = await import("./lib.js");
+
+        const validFiles = mockFiles.filter(f => {
+          if (!isVideoFile(f.name)) return false;
+          const info = detectContentType(f.name);
+          return info.type !== 'unknown';
+        });
+
+        expect(validFiles).toHaveLength(2);
+        expect(validFiles.map(f => f.name)).toEqual([
+          "The.Rookie.S04E01.mkv",
+          "Marty.Supreme.2025.mp4"
+        ]);
+      });
+    });
+
+    describe("End-to-End Movie Workflow", () => {
+      it("should complete full movie renaming workflow", async () => {
+        // Test case: User has multiple quality versions of Marty Supreme (2025)
+        const mockFiles: Dirent[] = [
+          new MockDirent("Marty.Supreme.2025.1080p.WEBRip.x264.AAC5.1-[YTS.BZ].mp4"),
+          new MockDirent("Marty.Supreme.2025.720p.WEBRip.x264.mp4"),
+          new MockDirent("Marty.Supreme.2025.480p.mp4"),
+        ] as Dirent[];
+
+        const {
+          detectContentType,
+          inferMovieTitle,
+          normalizeShowName,
+          movieTitleMatchesFilename,
+          checkForConflicts
+        } = await import("./lib.js");
+
+        // Step 1: Detect content type from first file
+        const firstFileContentInfo = detectContentType(mockFiles[0].name);
+        expect(firstFileContentInfo.type).toBe("movie");
+        expect(firstFileContentInfo.year).toBe("2025");
+
+        // Step 2: Infer movie title
+        const inference = inferMovieTitle(mockFiles.map(f => f.name));
+        expect(inference.showName).toBe("Marty Supreme");
+        expect(inference.confidence).toBe("high");
+
+        // Step 3: User confirms or enters movie title (simulated as "Marty Supreme")
+        const finalTitle = inference.showName!;
+        const normalizedTitle = normalizeShowName(finalTitle);
+        expect(normalizedTitle).toBe("Marty.Supreme");
+
+        // Step 4: Generate rename operations
+        const operations = mockFiles.map(file => {
+          const contentInfo = detectContentType(file.name);
+
+          if (contentInfo.type === 'movie') {
+            if (!movieTitleMatchesFilename(finalTitle, file.name)) {
+              return {
+                oldPath: `/path/${file.name}`,
+                newPath: "",
+                oldName: file.name,
+                newName: "",
+                skipped: true,
+                reason: "Movie title not found in filename",
+              };
+            }
+
+            const ext = file.name.substring(file.name.lastIndexOf('.'));
+            const newName = `${normalizedTitle}.${contentInfo.year}${ext}`;
+
+            return {
+              oldPath: `/path/${file.name}`,
+              newPath: `/path/${newName}`,
+              oldName: file.name,
+              newName,
+              skipped: false,
+            };
+          }
+
+          return {
+            oldPath: `/path/${file.name}`,
+            newPath: "",
+            oldName: file.name,
+            newName: "",
+            skipped: true,
+            reason: "No S##E## pattern or year found",
+          };
+        });
+
+        // Step 5: Verify all operations are valid
+        const validOps = operations.filter(op => !op.skipped);
+        expect(validOps).toHaveLength(3);
+
+        // Step 6: Check for conflicts (all should be same name - this is expected for different quality versions)
+        const conflicts = checkForConflicts(validOps);
+        expect(conflicts).toEqual(["Marty.Supreme.2025.mp4"]);
+
+        // Step 7: Verify expected transformations
+        expect(operations[0]).toMatchObject({
+          oldName: "Marty.Supreme.2025.1080p.WEBRip.x264.AAC5.1-[YTS.BZ].mp4",
+          newName: "Marty.Supreme.2025.mp4",
+          skipped: false
+        });
+        expect(operations[1]).toMatchObject({
+          oldName: "Marty.Supreme.2025.720p.WEBRip.x264.mp4",
+          newName: "Marty.Supreme.2025.mp4",
+          skipped: false
+        });
+        expect(operations[2]).toMatchObject({
+          oldName: "Marty.Supreme.2025.480p.mp4",
+          newName: "Marty.Supreme.2025.mp4",
+          skipped: false
+        });
+      });
+
+      it("should handle movie with brackets and parentheses in full workflow", async () => {
+        const mockFiles: Dirent[] = [
+          new MockDirent("Some.Movie.[2024].1080p.mp4"),
+          new MockDirent("Another.Movie.(2023).720p.mp4"),
+        ] as Dirent[];
+
+        const {
+          detectContentType,
+          inferMovieTitle,
+          normalizeShowName,
+          movieTitleMatchesFilename
+        } = await import("./lib.js");
+
+        // Process first movie
+        const contentInfo1 = detectContentType(mockFiles[0].name);
+        expect(contentInfo1.type).toBe("movie");
+        expect(contentInfo1.year).toBe("2024");
+
+        const inference1 = inferMovieTitle([mockFiles[0].name]);
+        expect(inference1.showName).toBe("Some Movie");
+
+        const normalized1 = normalizeShowName(inference1.showName!);
+        const ext1 = mockFiles[0].name.substring(mockFiles[0].name.lastIndexOf('.'));
+        const newName1 = `${normalized1}.${contentInfo1.year}${ext1}`;
+        expect(newName1).toBe("Some.Movie.2024.mp4");
+
+        // Process second movie
+        const contentInfo2 = detectContentType(mockFiles[1].name);
+        expect(contentInfo2.type).toBe("movie");
+        expect(contentInfo2.year).toBe("2023");
+
+        const inference2 = inferMovieTitle([mockFiles[1].name]);
+        expect(inference2.showName).toBe("Another Movie");
+
+        const normalized2 = normalizeShowName(inference2.showName!);
+        const ext2 = mockFiles[1].name.substring(mockFiles[1].name.lastIndexOf('.'));
+        const newName2 = `${normalized2}.${contentInfo2.year}${ext2}`;
+        expect(newName2).toBe("Another.Movie.2023.mp4");
+      });
+
+      it("should maintain backward compatibility with episode renaming", async () => {
+        // Test case: User still has TV episodes and workflow should work exactly as before
+        const mockFiles: Dirent[] = [
+          new MockDirent("The.Rookie.S04E01.720p.mkv"),
+          new MockDirent("The.Rookie.S04E02.1080p.mkv"),
+        ] as Dirent[];
+
+        const {
+          detectContentType,
+          inferShowName,
+          normalizeShowName,
+          showNameMatchesFilename
+        } = await import("./lib.js");
+
+        // Step 1: Detect content type - should still be episode
+        const firstFileContentInfo = detectContentType(mockFiles[0].name);
+        expect(firstFileContentInfo.type).toBe("episode");
+        expect(firstFileContentInfo.seasonEpisode).toEqual({ season: "04", episode: "01" });
+
+        // Step 2: Infer show name (not movie title)
+        const inference = inferShowName(mockFiles.map(f => f.name));
+        expect(inference.showName).toBe("The Rookie");
+        expect(inference.confidence).toBe("high");
+
+        // Step 3: Generate rename operations
+        const finalName = inference.showName!;
+        const normalizedName = normalizeShowName(finalName);
+
+        const operations = mockFiles.map(file => {
+          const contentInfo = detectContentType(file.name);
+
+          if (contentInfo.type === 'episode') {
+            if (!showNameMatchesFilename(finalName, file.name)) {
+              return {
+                oldName: file.name,
+                newName: "",
+                skipped: true,
+              };
+            }
+
+            const ext = file.name.substring(file.name.lastIndexOf('.'));
+            const newName = `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}${ext}`;
+
+            return {
+              oldName: file.name,
+              newName,
+              skipped: false,
+            };
+          }
+
+          return {
+            oldName: file.name,
+            newName: "",
+            skipped: true,
+          };
+        });
+
+        // Verify episode renaming still works
+        expect(operations[0]).toMatchObject({
+          oldName: "The.Rookie.S04E01.720p.mkv",
+          newName: "The.Rookie.S04E01.mkv",
+          skipped: false
+        });
+        expect(operations[1]).toMatchObject({
+          oldName: "The.Rookie.S04E02.1080p.mkv",
+          newName: "The.Rookie.S04E02.mkv",
+          skipped: false
+        });
+      });
+    });
+
+    describe("Subtitle File Handling", () => {
+      it("should rename subtitle files alongside movie files", async () => {
+        const {
+          detectContentType,
+          normalizeShowName,
+          findMatchingSubtitles,
+          getSubtitleLanguageCode,
+        } = await import("./lib.js");
+
+        const allFiles = [
+          "Marty.Supreme.2025.1080p.mp4",
+          "Marty.Supreme.2025.1080p.srt",
+        ];
+
+        const videoFile = allFiles[0];
+        const contentInfo = detectContentType(videoFile);
+        const movieTitle = "Marty Supreme";
+        const normalizedTitle = normalizeShowName(movieTitle);
+
+        // Find matching subtitles
+        const matchingSubtitles = findMatchingSubtitles(videoFile, allFiles);
+        expect(matchingSubtitles).toEqual(["Marty.Supreme.2025.1080p.srt"]);
+
+        // Generate operations
+        const operations = [];
+
+        // Video file operation
+        operations.push({
+          oldName: videoFile,
+          newName: `${normalizedTitle}.${contentInfo.year}.mp4`,
+          skipped: false,
+        });
+
+        // Subtitle file operations
+        for (const subtitleFile of matchingSubtitles) {
+          const languageCode = getSubtitleLanguageCode(subtitleFile);
+          const subtitleNewName = languageCode
+            ? `${normalizedTitle}.${contentInfo.year}.${languageCode}.srt`
+            : `${normalizedTitle}.${contentInfo.year}.srt`;
+
+          operations.push({
+            oldName: subtitleFile,
+            newName: subtitleNewName,
+            skipped: false,
+          });
+        }
+
+        expect(operations).toHaveLength(2);
+        expect(operations[0]).toMatchObject({
+          oldName: "Marty.Supreme.2025.1080p.mp4",
+          newName: "Marty.Supreme.2025.mp4",
+          skipped: false,
+        });
+        expect(operations[1]).toMatchObject({
+          oldName: "Marty.Supreme.2025.1080p.srt",
+          newName: "Marty.Supreme.2025.srt",
+          skipped: false,
+        });
+      });
+
+      it("should handle subtitle files with language codes", async () => {
+        const {
+          detectContentType,
+          normalizeShowName,
+          findMatchingSubtitles,
+          getSubtitleLanguageCode,
+        } = await import("./lib.js");
+
+        const allFiles = [
+          "Marty.Supreme.2025.mp4",
+          "Marty.Supreme.2025.en.srt",
+          "Marty.Supreme.2025.es.srt",
+        ];
+
+        const videoFile = allFiles[0];
+        const contentInfo = detectContentType(videoFile);
+        const movieTitle = "Marty Supreme";
+        const normalizedTitle = normalizeShowName(movieTitle);
+
+        // Find matching subtitles
+        const matchingSubtitles = findMatchingSubtitles(videoFile, allFiles);
+        expect(matchingSubtitles).toHaveLength(2);
+
+        // Generate operations
+        const operations = [];
+
+        // Video file operation
+        operations.push({
+          oldName: videoFile,
+          newName: `${normalizedTitle}.${contentInfo.year}.mp4`,
+          skipped: false,
+        });
+
+        // Subtitle file operations
+        for (const subtitleFile of matchingSubtitles) {
+          const languageCode = getSubtitleLanguageCode(subtitleFile);
+          const subtitleNewName = languageCode
+            ? `${normalizedTitle}.${contentInfo.year}.${languageCode}.srt`
+            : `${normalizedTitle}.${contentInfo.year}.srt`;
+
+          operations.push({
+            oldName: subtitleFile,
+            newName: subtitleNewName,
+            skipped: false,
+          });
+        }
+
+        expect(operations).toHaveLength(3);
+        expect(operations[0].newName).toBe("Marty.Supreme.2025.mp4");
+        expect(operations[1].newName).toBe("Marty.Supreme.2025.en.srt");
+        expect(operations[2].newName).toBe("Marty.Supreme.2025.es.srt");
+      });
+
+      it("should rename subtitle files alongside episode files", async () => {
+        const {
+          detectContentType,
+          normalizeShowName,
+          findMatchingSubtitles,
+          getSubtitleLanguageCode,
+        } = await import("./lib.js");
+
+        const allFiles = [
+          "The.Rookie.S04E07.720p.mkv",
+          "The.Rookie.S04E07.720p.srt",
+          "The.Rookie.S04E07.720p.en.srt",
+        ];
+
+        const videoFile = allFiles[0];
+        const contentInfo = detectContentType(videoFile);
+        const showName = "The Rookie";
+        const normalizedName = normalizeShowName(showName);
+
+        // Find matching subtitles
+        const matchingSubtitles = findMatchingSubtitles(videoFile, allFiles);
+        expect(matchingSubtitles).toHaveLength(2);
+
+        // Generate operations
+        const operations = [];
+
+        // Video file operation
+        operations.push({
+          oldName: videoFile,
+          newName: `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.mkv`,
+          skipped: false,
+        });
+
+        // Subtitle file operations
+        for (const subtitleFile of matchingSubtitles) {
+          const languageCode = getSubtitleLanguageCode(subtitleFile);
+          const subtitleNewName = languageCode
+            ? `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.${languageCode}.srt`
+            : `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.srt`;
+
+          operations.push({
+            oldName: subtitleFile,
+            newName: subtitleNewName,
+            skipped: false,
+          });
+        }
+
+        expect(operations).toHaveLength(3);
+        expect(operations[0].newName).toBe("The.Rookie.S04E07.mkv");
+        expect(operations[1].newName).toBe("The.Rookie.S04E07.srt");
+        expect(operations[2].newName).toBe("The.Rookie.S04E07.en.srt");
+      });
+
+      it("should not include subtitles when none match", async () => {
+        const {
+          findMatchingSubtitles,
+        } = await import("./lib.js");
+
+        const allFiles = [
+          "Movie.2025.mp4",
+          "Other.Movie.2025.srt",
+        ];
+
+        const matchingSubtitles = findMatchingSubtitles("Movie.2025.mp4", allFiles);
+        expect(matchingSubtitles).toEqual([]);
+      });
+
+      it("should process standalone subtitle files for movies", async () => {
+        const {
+          detectContentType,
+          extractMovieTitleFromFilename,
+          normalizeShowName,
+          getSubtitleLanguageCode,
+        } = await import("./lib.js");
+
+        const subtitleFile = "Marty.Supreme.2025.1080p.WEBRip.x264.AAC5.1-[YTS.BZ].srt";
+
+        // Detect content type
+        const contentInfo = detectContentType(subtitleFile);
+        expect(contentInfo.type).toBe("movie");
+        expect(contentInfo.year).toBe("2025");
+
+        // Extract movie title
+        const movieTitle = extractMovieTitleFromFilename(subtitleFile);
+        expect(movieTitle).toBe("Marty Supreme");
+
+        // Generate new name
+        const normalizedTitle = normalizeShowName(movieTitle!);
+        const languageCode = getSubtitleLanguageCode(subtitleFile);
+        const newName = languageCode
+          ? `${normalizedTitle}.${contentInfo.year}.${languageCode}.srt`
+          : `${normalizedTitle}.${contentInfo.year}.srt`;
+
+        expect(newName).toBe("Marty.Supreme.2025.srt");
+      });
+
+      it("should process standalone subtitle files with language codes", async () => {
+        const {
+          detectContentType,
+          extractMovieTitleFromFilename,
+          normalizeShowName,
+          getSubtitleLanguageCode,
+        } = await import("./lib.js");
+
+        const subtitleFile = "Marty.Supreme.2025.1080p.en.srt";
+
+        const contentInfo = detectContentType(subtitleFile);
+        const movieTitle = extractMovieTitleFromFilename(subtitleFile);
+        const normalizedTitle = normalizeShowName(movieTitle!);
+        const languageCode = getSubtitleLanguageCode(subtitleFile);
+
+        expect(languageCode).toBe("en");
+
+        const newName = languageCode
+          ? `${normalizedTitle}.${contentInfo.year}.${languageCode}.srt`
+          : `${normalizedTitle}.${contentInfo.year}.srt`;
+
+        expect(newName).toBe("Marty.Supreme.2025.en.srt");
+      });
+
+      it("should process standalone subtitle files for episodes", async () => {
+        const {
+          detectContentType,
+          extractShowNameFromFilename,
+          normalizeShowName,
+          getSubtitleLanguageCode,
+        } = await import("./lib.js");
+
+        const subtitleFile = "The.Rookie.S04E07.720p.srt";
+
+        const contentInfo = detectContentType(subtitleFile);
+        expect(contentInfo.type).toBe("episode");
+        expect(contentInfo.seasonEpisode).toEqual({ season: "04", episode: "07" });
+
+        const showName = extractShowNameFromFilename(subtitleFile);
+        expect(showName).toBe("The Rookie");
+
+        const normalizedName = normalizeShowName(showName!);
+        const languageCode = getSubtitleLanguageCode(subtitleFile);
+        const newName = languageCode
+          ? `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.${languageCode}.srt`
+          : `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.srt`;
+
+        expect(newName).toBe("The.Rookie.S04E07.srt");
+      });
+
+      it("should process standalone subtitle files with language codes for episodes", async () => {
+        const {
+          detectContentType,
+          extractShowNameFromFilename,
+          normalizeShowName,
+          getSubtitleLanguageCode,
+        } = await import("./lib.js");
+
+        const subtitleFile = "The.Rookie.S04E07.720p.en.srt";
+
+        const contentInfo = detectContentType(subtitleFile);
+        const showName = extractShowNameFromFilename(subtitleFile);
+        const normalizedName = normalizeShowName(showName!);
+        const languageCode = getSubtitleLanguageCode(subtitleFile);
+
+        expect(languageCode).toBe("en");
+
+        const newName = languageCode
+          ? `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.${languageCode}.srt`
+          : `${normalizedName}.S${contentInfo.seasonEpisode!.season}E${contentInfo.seasonEpisode!.episode}.srt`;
+
+        expect(newName).toBe("The.Rookie.S04E07.en.srt");
+      });
+    });
+  });
 });
