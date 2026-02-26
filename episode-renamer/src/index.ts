@@ -15,6 +15,7 @@ import {
   detectContentType,
   inferMovieTitle,
   movieTitleMatchesFilename,
+  extractMovieTitleFromFilename,
   extractYear,
   type RenameOperation,
   type InferenceResult,
@@ -198,14 +199,18 @@ async function performRename(op: RenameOperation): Promise<void> {
   // Detect content type from first file
   const firstFileContentInfo = detectContentType(videoFiles[0].name);
   const isMovie = firstFileContentInfo.type === 'movie';
+  const isMultiMovieDirectory = !isFile && isMovie;
 
-  // Infer show name or movie title from filenames
-  const inference = isMovie
-    ? inferMovieTitle(videoFiles.map(f => f.name))
-    : inferShowName(videoFiles.map(f => f.name));
+  let finalName: string = "";
+  let normalizedName: string = "";
 
-  const finalName = await promptForShowName(inference, isMovie);
-  const normalizedName = normalizeShowName(finalName);
+  if (!isMultiMovieDirectory) {
+    const inference = isMovie
+      ? inferMovieTitle(videoFiles.map(f => f.name))
+      : inferShowName(videoFiles.map(f => f.name));
+    finalName = await promptForShowName(inference, isMovie);
+    normalizedName = normalizeShowName(finalName);
+  }
 
   // Get all filenames for subtitle matching
   let allFilenames: string[];
@@ -221,7 +226,100 @@ async function performRename(op: RenameOperation): Promise<void> {
   }
 
   const operations: RenameOperation[] = [];
+  const handledSubtitles = new Set<string>();
 
+  if (isMultiMovieDirectory) {
+    // Pass 1: process video files, each with their own extracted title+year
+    for (const file of videoFiles) {
+      if (isSubtitleFile(file.name)) continue; // handle in pass 2
+
+      const contentInfo = detectContentType(file.name);
+
+      if (contentInfo.type !== 'movie') {
+        operations.push({
+          oldPath: file.path, newPath: "", oldName: file.name, newName: "",
+          skipped: true, reason: contentInfo.type === 'episode'
+            ? "Episode file in movie folder"
+            : "No year found in filename",
+        });
+        continue;
+      }
+
+      const movieTitle = extractMovieTitleFromFilename(file.name);
+      if (!movieTitle) {
+        operations.push({
+          oldPath: file.path, newPath: "", oldName: file.name, newName: "",
+          skipped: true, reason: "Could not extract movie title",
+        });
+        continue;
+      }
+
+      const normalized = normalizeShowName(movieTitle);
+      const ext = path.extname(file.name);
+      const newName = `${normalized}.${contentInfo.year}${ext}`;
+      operations.push({
+        oldPath: file.path,
+        newPath: path.join(resolvedPath, newName),
+        oldName: file.name,
+        newName,
+        skipped: false,
+      });
+
+      // Rename matching subtitles
+      const matchingSubtitles = findMatchingSubtitles(file.name, allFilenames);
+      for (const subtitleFile of matchingSubtitles) {
+        const languageCode = getSubtitleLanguageCode(subtitleFile);
+        const subtitleNewName = languageCode
+          ? `${normalized}.${contentInfo.year}.${languageCode}.srt`
+          : `${normalized}.${contentInfo.year}.srt`;
+        operations.push({
+          oldPath: path.join(resolvedPath, subtitleFile),
+          newPath: path.join(resolvedPath, subtitleNewName),
+          oldName: subtitleFile,
+          newName: subtitleNewName,
+          skipped: false,
+        });
+        handledSubtitles.add(subtitleFile);
+      }
+    }
+
+    // Pass 2: standalone subtitles not matched to a video
+    for (const file of videoFiles) {
+      if (!isSubtitleFile(file.name) || handledSubtitles.has(file.name)) continue;
+
+      const contentInfo = detectContentType(file.name);
+
+      if (contentInfo.type !== 'movie') {
+        operations.push({
+          oldPath: file.path, newPath: "", oldName: file.name, newName: "",
+          skipped: true, reason: "No year found in subtitle",
+        });
+        continue;
+      }
+
+      const movieTitle = extractMovieTitleFromFilename(file.name);
+      if (!movieTitle) {
+        operations.push({
+          oldPath: file.path, newPath: "", oldName: file.name, newName: "",
+          skipped: true, reason: "Could not extract movie title",
+        });
+        continue;
+      }
+
+      const normalized = normalizeShowName(movieTitle);
+      const languageCode = getSubtitleLanguageCode(file.name);
+      const newName = languageCode
+        ? `${normalized}.${contentInfo.year}.${languageCode}.srt`
+        : `${normalized}.${contentInfo.year}.srt`;
+      operations.push({
+        oldPath: file.path,
+        newPath: path.join(resolvedPath, newName),
+        oldName: file.name,
+        newName,
+        skipped: false,
+      });
+    }
+  } else {
   // Process video and subtitle files
   for (const file of videoFiles) {
     const contentInfo = detectContentType(file.name);
@@ -375,6 +473,7 @@ async function performRename(op: RenameOperation): Promise<void> {
       reason: "No S##E## pattern or year found",
     });
   }
+  } // end else (non-multi-movie directory)
 
   const validOps = operations.filter(op => !op.skipped);
 
