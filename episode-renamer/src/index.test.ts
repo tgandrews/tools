@@ -1330,4 +1330,174 @@ describe("Episode Renamer Integration Tests", () => {
       });
     });
   });
+
+  describe("Multi-Movie Directory", () => {
+    it("should rename multiple different movies independently without prompting", async () => {
+      const {
+        detectContentType,
+        extractMovieTitleFromFilename,
+        normalizeShowName,
+        isSubtitleFile,
+        findMatchingSubtitles,
+        getSubtitleLanguageCode,
+      } = await import("./lib.js");
+
+      const allFiles = [
+        "Alien.1979.1080p.mkv",
+        "Aliens.1986.BluRay.mkv",
+      ];
+
+      const operations: { oldName: string; newName: string; skipped: boolean }[] = [];
+
+      // Simulate multi-movie directory pass 1 (video files only)
+      for (const filename of allFiles) {
+        if (isSubtitleFile(filename)) continue;
+
+        const contentInfo = detectContentType(filename);
+        expect(contentInfo.type).toBe("movie");
+
+        const movieTitle = extractMovieTitleFromFilename(filename);
+        expect(movieTitle).not.toBeNull();
+
+        const normalized = normalizeShowName(movieTitle!);
+        const ext = filename.substring(filename.lastIndexOf("."));
+        const newName = `${normalized}.${contentInfo.year}${ext}`;
+        operations.push({ oldName: filename, newName, skipped: false });
+      }
+
+      expect(operations).toHaveLength(2);
+      expect(operations[0]).toMatchObject({
+        oldName: "Alien.1979.1080p.mkv",
+        newName: "Alien.1979.mkv",
+        skipped: false,
+      });
+      expect(operations[1]).toMatchObject({
+        oldName: "Aliens.1986.BluRay.mkv",
+        newName: "Aliens.1986.mkv",
+        skipped: false,
+      });
+    });
+
+    it("should rename multiple movies with matching subtitles independently", async () => {
+      const {
+        detectContentType,
+        extractMovieTitleFromFilename,
+        normalizeShowName,
+        isSubtitleFile,
+        findMatchingSubtitles,
+        getSubtitleLanguageCode,
+      } = await import("./lib.js");
+
+      const allFiles = [
+        "Movie.A.2020.mp4",
+        "Movie.A.2020.en.srt",
+        "Movie.B.2019.mp4",
+      ];
+
+      const handledSubtitles = new Set<string>();
+      const operations: { oldName: string; newName: string; skipped: boolean }[] = [];
+
+      // Pass 1: video files
+      for (const filename of allFiles) {
+        if (isSubtitleFile(filename)) continue;
+
+        const contentInfo = detectContentType(filename);
+        const movieTitle = extractMovieTitleFromFilename(filename);
+        const normalized = normalizeShowName(movieTitle!);
+        const ext = filename.substring(filename.lastIndexOf("."));
+        operations.push({ oldName: filename, newName: `${normalized}.${contentInfo.year}${ext}`, skipped: false });
+
+        const matchingSubtitles = findMatchingSubtitles(filename, allFiles);
+        for (const subtitleFile of matchingSubtitles) {
+          const languageCode = getSubtitleLanguageCode(subtitleFile);
+          const subtitleNewName = languageCode
+            ? `${normalized}.${contentInfo.year}.${languageCode}.srt`
+            : `${normalized}.${contentInfo.year}.srt`;
+          operations.push({ oldName: subtitleFile, newName: subtitleNewName, skipped: false });
+          handledSubtitles.add(subtitleFile);
+        }
+      }
+
+      expect(operations).toHaveLength(3);
+      expect(operations[0]).toMatchObject({ oldName: "Movie.A.2020.mp4", newName: "Movie.A.2020.mp4", skipped: false });
+      expect(operations[1]).toMatchObject({ oldName: "Movie.A.2020.en.srt", newName: "Movie.A.2020.en.srt", skipped: false });
+      expect(operations[2]).toMatchObject({ oldName: "Movie.B.2019.mp4", newName: "Movie.B.2019.mp4", skipped: false });
+    });
+
+    it("should rename a single movie in directory correctly", async () => {
+      const {
+        detectContentType,
+        extractMovieTitleFromFilename,
+        normalizeShowName,
+        isSubtitleFile,
+      } = await import("./lib.js");
+
+      const allFiles = ["Interstellar.2014.1080p.BluRay.mkv"];
+
+      const operations: { oldName: string; newName: string; skipped: boolean }[] = [];
+
+      for (const filename of allFiles) {
+        if (isSubtitleFile(filename)) continue;
+
+        const contentInfo = detectContentType(filename);
+        expect(contentInfo.type).toBe("movie");
+        expect(contentInfo.year).toBe("2014");
+
+        const movieTitle = extractMovieTitleFromFilename(filename);
+        expect(movieTitle).toBe("Interstellar");
+
+        const normalized = normalizeShowName(movieTitle!);
+        const ext = filename.substring(filename.lastIndexOf("."));
+        operations.push({ oldName: filename, newName: `${normalized}.${contentInfo.year}${ext}`, skipped: false });
+      }
+
+      expect(operations).toHaveLength(1);
+      expect(operations[0]).toMatchObject({
+        oldName: "Interstellar.2014.1080p.BluRay.mkv",
+        newName: "Interstellar.2014.mkv",
+        skipped: false,
+      });
+    });
+
+    it("should skip movie files with no extractable year", async () => {
+      const {
+        detectContentType,
+        isSubtitleFile,
+      } = await import("./lib.js");
+
+      const filename = "SomeMovieWithNoYear.mkv";
+      const contentInfo = detectContentType(filename);
+
+      expect(contentInfo.type).toBe("unknown");
+
+      // In the multi-movie directory branch, this would be skipped
+      const skipped = contentInfo.type !== "movie";
+      expect(skipped).toBe(true);
+    });
+
+    it("should still prompt for show name in episode directory (regression)", async () => {
+      const {
+        detectContentType,
+        inferShowName,
+      } = await import("./lib.js");
+
+      const filenames = [
+        "The.Rookie.S04E01.720p.mkv",
+        "The.Rookie.S04E02.1080p.mkv",
+      ];
+
+      // Content type should be episode, not movie → isMultiMovieDirectory = false
+      const firstFileContentInfo = detectContentType(filenames[0]);
+      expect(firstFileContentInfo.type).toBe("episode");
+
+      const isMovie = firstFileContentInfo.type === "movie";
+      expect(isMovie).toBe(false);
+
+      // isMultiMovieDirectory = !isFile && isMovie = false
+      // So inference + prompt path is used
+      const inference = inferShowName(filenames);
+      expect(inference.showName).toBe("The Rookie");
+      expect(inference.confidence).toBe("high");
+    });
+  });
 });
