@@ -20,6 +20,9 @@ _tools_list() {
 
 if [ -n "${ZSH_VERSION:-}" ]; then
     _tools_zsh() {
+        _arguments \
+            '1: :->tool' \
+            '*: :_files' && return
         local tools
         tools=($(_tools_list "$_TOOLS_DIR"))
         compadd "$@" -- "${tools[@]}"
@@ -28,9 +31,13 @@ if [ -n "${ZSH_VERSION:-}" ]; then
 else
     _tools_bash() {
         local cur="${COMP_WORDS[COMP_CWORD]}"
-        local tools
-        tools=$(_tools_list "$_TOOLS_DIR" | tr '\n' ' ')
-        COMPREPLY=($(compgen -W "$tools" -- "$cur"))
+        if [ "$COMP_CWORD" -eq 1 ]; then
+            local tools
+            tools=$(_tools_list "$_TOOLS_DIR" | tr '\n' ' ')
+            COMPREPLY=($(compgen -W "$tools" -- "$cur"))
+        else
+            COMPREPLY=($(compgen -f -- "$cur"))
+        fi
     }
     complete -F _tools_bash tools tools.sh
 fi
